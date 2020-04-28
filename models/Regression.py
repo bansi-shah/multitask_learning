@@ -56,7 +56,7 @@ def PyramidPoolingModule(inputs, feature_map_shape, pooling_type):
 
 
 
-def build_pspnet(inputs, label_size, num_classes, preset_model='PSPNet', frontend="ResNet101", pooling_type = "MAX", weight_decay=1e-5, upscaling_method="conv", is_training=True, pretrained_dir="models"):
+def build_regression(inputs, label_size, num_classes, preset_model='PSPNet', frontend="ResNet101", pooling_type = "MAX", weight_decay=1e-5, upscaling_method="conv", is_training=True, pretrained_dir="models"):
     """
     Builds the PSPNet model. 
 
@@ -72,11 +72,15 @@ def build_pspnet(inputs, label_size, num_classes, preset_model='PSPNet', fronten
     """
 
     logits, end_points, frontend_scope, init_fn  = frontend_builder.build_frontend(inputs, frontend, pretrained_dir=pretrained_dir, is_training=is_training)
+
     feature_map_shape = [int(x / 8.0) for x in label_size]
+    # print(feature_map_shape)
     psp = PyramidPoolingModule(end_points['pool3'], feature_map_shape=feature_map_shape, pooling_type=pooling_type)
+
     net = slim.conv2d(psp, 512, [3, 3], activation_fn=None)
     net = slim.batch_norm(net, fused=True)
     net = tf.nn.relu(net)
+
     if upscaling_method.lower() == "conv":
         net = ConvUpscaleBlock(net, 256, kernel_size=[3, 3], scale=2)
         net = ConvBlock(net, 256)
@@ -86,7 +90,9 @@ def build_pspnet(inputs, label_size, num_classes, preset_model='PSPNet', fronten
         net = ConvBlock(net, 64)
     elif upscaling_method.lower() == "bilinear":
         net = Upsampling(net, label_size)
-    net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None, scope='logits')
+    
+    net = slim.conv2d(net, num_classes, [1, 1], activation_fn=tf.nn.relu, scope='logits')
+
     return net, init_fn
 
 def mean_image_subtraction(inputs, means=[123.68, 116.78, 103.94]):

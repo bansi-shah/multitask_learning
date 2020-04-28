@@ -1,0 +1,166 @@
+from __future__ import print_function
+import os,time,cv2, sys, math
+import tensorflow as tf
+import tensorflow.contrib.slim as slim
+import numpy as np
+import time, datetime
+import argparse
+import random
+import subprocess
+
+# use 'Agg' on matplotlib so that plots could be generated even without Xserver
+# running
+import matplotlib
+matplotlib.use('Agg')
+
+from utils import utils, helpers
+from builders import model_builder
+
+import matplotlib.pyplot as plt
+
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', type=str, default="CamVid", help='Dataset you are using.')
+parser.add_argument('--crop_height', type=int, default=512, help='Height of cropped input image to network')
+parser.add_argument('--crop_width', type=int, default=512, help='Width of cropped input image to network')
+parser.add_argument('--batch_size'  , type=int, default=1, help='Number of images in each batch')
+parser.add_argument('--num_val_images', type=int, default=40, help='The number of images to used for validations')
+parser.add_argument('--h_flip', type=str2bool, default=False, help='Whether to randomly flip the image horizontally for data augmentation')
+parser.add_argument('--v_flip', type=str2bool, default=False, help='Whether to randomly flip the image vertically for data augmentation')
+parser.add_argument('--brightness', type=float, default=None, help='Whether to randomly change the image brightness for data augmentation. Specifies the max bightness change as a factor between 0.0 and 1.0. For example, 0.1 represents a max brightness change of 10%% (+-).')
+parser.add_argument('--rotation', type=float, default=None, help='Whether to randomly rotate the image for data augmentation. Specifies the max rotation angle in degrees.')
+parser.add_argument('--model', type=str, default="PSPNetDrop", help='The model you are using. See model_builder.py for supported models')
+parser.add_argument('--frontend', type=str, default="ResNet101", help='The frontend you are using. See frontend_builder.py for supported models')
+parser.add_argument('--checkpoint_path', type=str, default="auto_dropout_2", help='The path to save the checkpoint')
+parser.add_argument('--log_file', type=str, default=None, help='The path to save logs')
+args = parser.parse_args()
+
+def data_augmentation(image, label1, label2, args):
+    # Data augmentation
+    if (args.crop_width <= image.shape[1]) and (args.crop_height <= image.shape[0]):
+        x = random.randint(0, image.shape[1]-args.crop_width)
+        y = random.randint(0, image.shape[0]-args.crop_height)
+        
+        if len(label2.shape) == 3:
+            return image[y:y+args.crop_height, x:x+args.crop_width, :], label1[y:y+args.crop_height, x:x+args.crop_width, :],  label2[y:y+args.crop_height, x:x+args.crop_width, :], 
+        else:
+            return image[y:y+args.crop_height, x:x+args.crop_width, :], label1[y:y+args.crop_height, x:x+args.crop_width, :], label2[y:y+args.crop_height, x:x+args.crop_width], 
+    else:
+        raise Exception('Crop shape (%d, %d) exceeds image dimensions (%d, %d)!' % (args.crop_height, args.crop_width, image.shape[0], image.shape[1]))
+
+# Get the names of the classes so we can record the evaluation results
+class_names_list, label_values = helpers.get_label_info(os.path.join(utils.dataset_dir[args.dataset]['path'], "class_dict.csv"))
+class_names_string = ""
+for class_name in class_names_list:
+    if not class_name == class_names_list[-1]:
+        class_names_string = class_names_string + class_name + ", "
+    else:
+        class_names_string = class_names_string + class_name
+
+num_classes = len(label_values)
+
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+sess=tf.Session(config=config)
+prev_loss = 100000000000
+
+# Compute your softmax cross entropy loss
+net_input = tf.placeholder(tf.float32,shape=[None,None,None,3])
+net_output1 = tf.placeholder(tf.float32,shape=[None,None,None,num_classes])
+net_output2 = tf.placeholder(tf.float32,shape=[None,None,None,1])
+dropout_rate = tf.Variable(0.6, name='dropout_rate')
+
+network, init_fn = model_builder.build_model(model_name=args.model, frontend=args.frontend, net_input=net_input, num_classes=num_classes, crop_width=args.crop_width, crop_height=args.crop_height, is_training=True, dropout_rate=dropout_rate)
+network1, network2 = network[0], network[1]
+
+saver=tf.train.Saver(max_to_keep=1000)
+sess.run(tf.global_variables_initializer())
+
+# If a pre-trained ResNet is required, load the weights.
+# This must be done AFTER the variables are initialized with sess.run(tf.global_variables_initializer())
+if init_fn is not None:
+    init_fn(sess)
+
+# os.makedirs("Test2", exist_ok=True)
+
+saver.restore(sess, args.checkpoint_path)
+
+# Load the data
+print("Loading the data ...")
+train_input_names, train_output1_names, train_output2_names, val_input_names, val_output1_names, val_output2_names, test_input_names, test_output1_names, test_output2_names = utils.prepare_data_multi(dataset=args.dataset)
+
+scores_list = []
+class_scores_list = []
+precision_list = []
+recall_list = []
+f1_list = []
+iou_list = []
+validation_loss_list = []
+binary_loss_list = []
+        
+for ind in range(len(test_input_names)):
+    sys.stdout.write("\rRunning test image %d / %d"%(ind+1, len(test_input_names)))
+    sys.stdout.flush()
+    input_image = np.expand_dims(np.float32(utils.load_image(test_input_names[ind])[:args.crop_height, :args.crop_width]),axis=0)/255.0
+    
+    gt1 = utils.load_image(test_output1_names[ind])[:args.crop_height, :args.crop_width]
+    gt1 = helpers.reverse_one_hot(helpers.one_hot_it(gt1, label_values))
+    
+    gt2 = utils.load_image_output(test_output2_names[ind])[:args.crop_height, :args.crop_width]
+    gt2 = np.float32(np.expand_dims(gt2, axis = -1))            
+    # st = time.time()
+
+    output1_image, output2_image = sess.run([network1, network2], feed_dict={net_input:input_image, dropout_rate: 1.0})
+    output1_image = np.array(output1_image[0,:,:,:])
+    output1_image = helpers.reverse_one_hot(output1_image)
+    out1_vis_image = helpers.colour_code_segmentation(output1_image, label_values)
+    
+    out2_vis_image = np.array(output2_image[0,:,:,:])*255
+
+    accuracy, class_accuracies, prec, rec, f1, iou = utils.evaluate_segmentation(pred=output1_image, label=gt1, num_classes=num_classes)
+    validation_loss, binary_loss = utils.evaluate_regression(pred=output2_image, label=gt2/255.0)
+
+    scores_list.append(accuracy)
+    class_scores_list.append(class_accuracies)
+    precision_list.append(prec)
+    recall_list.append(rec)
+    f1_list.append(f1)
+    iou_list.append(iou)
+    validation_loss_list.append(validation_loss)
+    binary_loss_list.append(binary_loss)
+    gt1 = helpers.colour_code_segmentation(gt1, label_values)
+
+    # file_name = os.path.basename(test_input_names[ind])
+    # file_name = os.path.splitext(file_name)[0]
+    # cv2.imwrite("%s/%s_org.png"%("Test2", file_name),cv2.cvtColor(np.uint8(input_image[0]*255.0), cv2.COLOR_RGB2BGR))
+    # cv2.imwrite("%s/%s_pred1.png"%("Test2", file_name),cv2.cvtColor(np.uint8(out1_vis_image), cv2.COLOR_RGB2BGR))
+    # cv2.imwrite("%s/%s_gt1.png"%("Test2", file_name),cv2.cvtColor(np.uint8(gt1), cv2.COLOR_RGB2BGR))
+    # cv2.imwrite("%s/%s_pred2.png"%("Test2", file_name),cv2.cvtColor(np.uint8(out2_vis_image), cv2.COLOR_RGB2BGR))
+    # cv2.imwrite("%s/%s_gt2.png"%("Test2", file_name),cv2.cvtColor(np.uint8(gt2), cv2.COLOR_GRAY2BGR))
+
+avg_score = np.mean(scores_list)
+class_avg_scores = np.mean(class_scores_list, axis=0)
+avg_precision = np.mean(precision_list)
+avg_recall = np.mean(recall_list)
+avg_f1 = np.mean(f1_list)
+avg_iou = np.mean(iou_list)
+avg_validation_loss = np.mean(validation_loss_list)
+avg_binary_loss = np.mean(binary_loss_list)
+
+print("\nAverage validation accuracy  %f"% ( avg_score))
+print("Average per class validation accuracies for epoch:")
+for index, item in enumerate(class_avg_scores):
+    print("%s = %f" % (class_names_list[index], item))
+print("Validation precision = ", avg_precision)
+print("Validation recall = ", avg_recall)
+print("Validation F1 score = ", avg_f1)
+print("Validation IoU score = ", avg_iou)
+print("Validation Regression Loss score = ", avg_validation_loss)
+print("Validation Binary Loss score =", avg_binary_loss)

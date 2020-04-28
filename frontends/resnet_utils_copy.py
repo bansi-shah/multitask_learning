@@ -110,7 +110,7 @@ def conv2d_same(inputs, num_outputs, kernel_size, stride, rate=1, scope=None):
   """
   if stride == 1:
     return slim.conv2d(inputs, num_outputs, kernel_size, stride=1, rate=rate,
-                       padding='SAME', scope=scope, trainable=False)
+                       padding='SAME', scope=scope)
   else:
     kernel_size_effective = kernel_size + (kernel_size - 1) * (rate - 1)
     pad_total = kernel_size_effective - 1
@@ -119,7 +119,7 @@ def conv2d_same(inputs, num_outputs, kernel_size, stride, rate=1, scope=None):
     inputs = tf.pad(inputs,
                     [[0, 0], [pad_beg, pad_end], [pad_beg, pad_end], [0, 0]])
     return slim.conv2d(inputs, num_outputs, kernel_size, stride=stride,
-                       rate=rate, padding='VALID', scope=scope, trainable=False)
+                       rate=rate, padding='VALID', scope=scope)
 
 
 @slim.add_arg_scope
@@ -234,8 +234,7 @@ def resnet_arg_scope(weight_decay=0.0001,
       'updates_collections': None,
       'is_training': is_training,
       'fused': True,  # Use fused batch norm if possible.
-      'trainable':False,  
-}
+  }
 
   with slim.arg_scope(
       [slim.conv2d],

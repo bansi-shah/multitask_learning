@@ -33,7 +33,6 @@ def get_label_info(csv_path):
         # print(class_dict)
     return class_names, label_values
 
-
 def one_hot_it(label, label_values):
     """
     Convert a segmentation image label array to one-hot format
@@ -99,6 +98,8 @@ def reverse_one_hot(image):
     x = np.argmax(image, axis = -1)
     return x
 
+def reverse_sigmoid(output):
+    return ((1.0/(1 + np.exp(-output)))>=0.5) 
 
 def colour_code_segmentation(image, label_values):
     """
@@ -132,3 +133,33 @@ def colour_code_segmentation(image, label_values):
 
 # file_name = "gt_test.png"
 # cv2.imwrite(file_name,np.uint8(gt))
+
+def fgbg(label, label_values, class_names):
+    fg = ['Animal', 'Bicyclist', 'Car', 'Child', 'Pedestrian', 'SUVPickupTruck', 'TrafficLight', 'TrafficCone', 'OtherMoving', 'MotorcycleScooter', 'Truck_Bus', 'Train']
+    fg_values = []
+    for i, class_name in enumerate(class_names):
+        if class_name in fg:
+            fg_values.append(tuple(label_values[i]))
+
+    label = np.array(label)
+
+    x = np.zeros((label.shape[0], label.shape[1]))    
+    y = np.ones((label.shape[0], label.shape[1]))    
+   
+    for colour in fg_values:
+        equality = np.equal(label, colour)
+        class_map = np.all(equality, axis = -1)
+        x += class_map
+
+    y = y - x
+    semantic_map = np.stack([x, y], axis=-1)
+    return semantic_map
+
+def colour_code_fgbg(label):
+    final = np.zeros((label.shape[0], label.shape[1], 3))
+    final[label == 0] = (255, 255, 255)
+    return final
+
+def convert2d(image):
+   return np.expand_dims(image >= 128, axis = -1)
+   

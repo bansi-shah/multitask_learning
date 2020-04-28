@@ -3,6 +3,7 @@ from tensorflow.contrib import slim
 import numpy as np
 from builders import frontend_builder
 import os, sys
+from frontends import resnet_v2
 
 def Upsampling(inputs,feature_map_shape):
     return tf.image.resize_bilinear(inputs, size=feature_map_shape)
@@ -54,40 +55,88 @@ def PyramidPoolingModule(inputs, feature_map_shape, pooling_type):
     res = tf.concat([inputs, interp_block6, interp_block3, interp_block2, interp_block1], axis=-1)
     return res
 
+def Attention(inputs, n_filters):
+    # Global average pooling
+    net = tf.reduce_mean(inputs, [1, 2], keep_dims=True)
+    net = slim.conv2d(net, n_filters, kernel_size=[1, 1])
+    net = slim.batch_norm(net, fused=True)
+    net = tf.nn.softmax(net)
+    # net = tf.sigmoid(net)
+    net = tf.multiply(inputs, net)
+    return net
 
-
-def build_pspnet(inputs, label_size, num_classes, preset_model='PSPNet', frontend="ResNet101", pooling_type = "MAX", weight_decay=1e-5, upscaling_method="conv", is_training=True, pretrained_dir="models"):
+def build_pspnet_multi_video(input1, input2, input3, label_size, num_classes, preset_model='PSPNetMultiVideo', frontend="ResNet101", pooling_type = "MAX", weight_decay=1e-5, upscaling_method="conv", is_training=True, pretrained_dir="models"):
     """
     Builds the PSPNet model. 
 
     Arguments:
-      inputs: The input tensor
+      input*: The input tensor
       label_size: Size of the final label tensor. We need to know this for proper upscaling 
       preset_model: Which model you want to use. Select which ResNet model to use for feature extraction 
       num_classes: Number of classes
       pooling_type: Max or Average pooling
 
     Returns:
-      PSPNet model
+      PSPNetMultiVideo model
     """
 
-    logits, end_points, frontend_scope, init_fn  = frontend_builder.build_frontend(inputs, frontend, pretrained_dir=pretrained_dir, is_training=is_training)
+    with slim.arg_scope(resnet_v2.resnet_arg_scope(weight_decay=weight_decay)):
+        logit_1, end_point_1 = resnet_v2.resnet_v2_101(input1, is_training=is_training, scope='resnet_v2_101')
+        logit_2, end_point_2 = resnet_v2.resnet_v2_101(input2, is_training=is_training, scope='resnet_v2_101', reuse = True)
+        logit_3, end_point_3 = resnet_v2.resnet_v2_101(input3, is_training=is_training, scope='resnet_v2_101', reuse = True)
+
+        init_fn = slim.assign_from_checkpoint_fn(os.path.join(pretrained_dir, 'resnet_v2_101.ckpt'), slim.get_model_variables('resnet_v2_101'))
+    
+
+    """
+    Net 1 will do segmentation, Net 2 will do Regression
+    """
+
+    out1 = slim.conv2d(end_point_1['pool3'], 512, [3, 3], activation_fn=None)
+    out2 = slim.conv2d(end_point_2['pool3'], 512, [3, 3], activation_fn=None)
+    out3 = slim.conv2d(end_point_3['pool3'], 512, [3, 3], activation_fn=None)
+    net = tf.concat([out1, out2, out3], axis = -1)
+
     feature_map_shape = [int(x / 8.0) for x in label_size]
-    psp = PyramidPoolingModule(end_points['pool3'], feature_map_shape=feature_map_shape, pooling_type=pooling_type)
-    net = slim.conv2d(psp, 512, [3, 3], activation_fn=None)
-    net = slim.batch_norm(net, fused=True)
-    net = tf.nn.relu(net)
+    
+    net1 = PyramidPoolingModule(net, feature_map_shape=feature_map_shape, pooling_type=pooling_type)
+    net1 = slim.conv2d(net1, 512, [3, 3], activation_fn=None)
+    net1 = slim.batch_norm(net1, fused=True)
+    net1 = tf.nn.relu(net1)
+
     if upscaling_method.lower() == "conv":
-        net = ConvUpscaleBlock(net, 256, kernel_size=[3, 3], scale=2)
-        net = ConvBlock(net, 256)
-        net = ConvUpscaleBlock(net, 128, kernel_size=[3, 3], scale=2)
-        net = ConvBlock(net, 128)
-        net = ConvUpscaleBlock(net, 64, kernel_size=[3, 3], scale=2)
-        net = ConvBlock(net, 64)
+        net1 = ConvUpscaleBlock(net1, 256, kernel_size=[3, 3], scale=2)
+        net1 = ConvBlock(net1, 256)
+        net1 = ConvUpscaleBlock(net1, 128, kernel_size=[3, 3], scale=2)
+        net1 = ConvBlock(net1, 128)
+        net1 = ConvUpscaleBlock(net1, 64, kernel_size=[3, 3], scale=2)
+        net1 = ConvBlock(net1, 64)
     elif upscaling_method.lower() == "bilinear":
-        net = Upsampling(net, label_size)
-    net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None, scope='logits')
-    return net, init_fn
+        net1 = Upsampling(net1, label_size)
+    
+    net1 = slim.conv2d(net1, num_classes, [1, 1], activation_fn=None, scope='logits1')
+
+    net2 = PyramidPoolingModule(net, feature_map_shape=feature_map_shape, pooling_type=pooling_type)
+    net2 = slim.conv2d(net, 512, [3, 3], activation_fn=None)
+    net2 = slim.batch_norm(net2, fused=True)
+    net2 = tf.nn.relu(net2)
+
+    if upscaling_method.lower() == "conv":
+        net2 = ConvUpscaleBlock(net2, 256, kernel_size=[3, 3], scale=2)
+        net2 = ConvBlock(net2, 256)
+        net2 = ConvUpscaleBlock(net2, 128, kernel_size=[3, 3], scale=2)
+        net2 = ConvBlock(net2, 128)
+        net2 = ConvUpscaleBlock(net2, 64, kernel_size=[3, 3], scale=2)
+        net2 = ConvBlock(net2, 64)
+    elif upscaling_method.lower() == "bilinear":
+        net2 = Upsampling(net2, label_size)
+
+    # net2 = ConvBlock(net2, 32)
+    # net2 = Attention(net2, 32)
+    
+    # net2 = slim.conv2d(net2, 1, [1, 1], activation_fn=tf.nn.sigmoid, scope='logits2')
+    net2 = slim.conv2d(net2, 1, [1, 1], activation_fn=tf.nn.relu, scope='logits2')
+    return net1, net2, init_fn
 
 def mean_image_subtraction(inputs, means=[123.68, 116.78, 103.94]):
     inputs=tf.to_float(inputs)

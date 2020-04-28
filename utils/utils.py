@@ -5,45 +5,258 @@ import tensorflow.contrib.slim as slim
 import numpy as np
 import time, datetime
 import os, random
-from scipy.misc import imread
+from cv2 import imread
 import ast
 from sklearn.metrics import precision_score, \
     recall_score, confusion_matrix, classification_report, \
     accuracy_score, f1_score
 
-from utils import helpers
+from utils import helpers, conf
+from utils.conf import *
 
-def prepare_data(dataset_dir):
+import scipy
+from scipy import ndimage
+import selectivesearch
+from selectivesearch import selective_search
+
+def calculate_complexity(image):
+    l, regions = selective_search(image, scale=500, sigma=0.9, min_size=20)
+    complexity = len(regions)
+    print(complexity)
+    '''
+    dy = ndimage.filters.sobel(image, 1)
+    dx = ndimage.filters.sobel(image, 0) 
+    map_si =  dx*dx + dy*dy
+    # si_mean = np.mean( map_si )
+    # si_rms  = np.sqrt( 1.0/npix * np.sum( map_si * map_si )  )
+    # si_std  = np.std( map_si )
+    map_si = map_si != 0
+    npix   = map_si.shape[0] * map_si.shape[1] * map_si.shape[2]
+    complexity = np.count_nonzero( map_si ) / np.float32( npix ) 
+    '''
+    return complexity
+
+def get_train_val_data_2(dataset_dir,  isvalid):
     train_input_names=[]
     train_output_names=[]
     val_input_names=[]
     val_output_names=[]
+    
+    for cities in os.listdir(dataset_dir + "/train"):
+        for file in os.listdir(dataset_dir + "/train/" + cities):
+            cwd = os.getcwd()
+            train_output_names.append(cwd + "/" + dataset_dir + "/train_labels/" + cities + "/" + file[:-15] +"gtFine_color.png" )
+            train_input_names.append(cwd + "/" + dataset_dir + "/train/" + cities + "/" + file)
+    
+    for cities in os.listdir(dataset_dir + "/val"):
+        if isvalid:
+            for file in os.listdir(dataset_dir + "/val/" + cities):
+                cwd = os.getcwd()
+                val_input_names.append(cwd + "/" + dataset_dir + "/val/" + cities + "/" + file)
+                val_output_names.append(cwd + "/" + dataset_dir + "/val_labels/" + cities + "/" + file[:-15] +"gtFine_color.png" )
+                # print(val_input_names[-1], val_output_names[-1])
+        else:
+            x = (int)(split_ratio * len(train_input_names))
+            return train_input_names[:x], train_output_names[:x], train_input_names[x:], train_output_names[x:] 
+    return train_input_names,train_output_names, val_input_names, val_output_names
+
+def get_test_data_2(dataset_dir):
     test_input_names=[]
     test_output_names=[]
+    for file in os.listdir(dataset_dir + "/test"):
+        for cities in os.listdir(dataset_dir + "/test"):
+            cwd = os.getcwd()
+            test_input_names.append(cwd + "/" + dataset_dir + "/test/" + cities + "/" + file)
+            test_output_names.append(cwd + "/" + dataset_dir + "/test_labels/" + cities + "/" + file[:-15]+"gtFine_color.png")
+
+    return test_input_names, test_output_names
+
+
+def get_train_val_data(dataset_dir, isvalid = False):
+    if 'cityscapes' in dataset_dir:
+        return get_train_val_data_2(dataset_dir, isvalid)
+    
+    train_input_names=[]
+    train_output_names=[]
+    val_input_names=[]
+    val_output_names=[]
+
+    # for file in os.listdir(dataset_dir + "/train"):
+    #     cwd = os.getcwd()
+    #     train_input_names.append(cwd + "/" + dataset_dir + "/train/" + file)
     for file in os.listdir(dataset_dir + "/train"):
         cwd = os.getcwd()
-        train_input_names.append(cwd + "/" + dataset_dir + "/train/" + file)
-    for file in os.listdir(dataset_dir + "/train_labels"):
-        cwd = os.getcwd()
         train_output_names.append(cwd + "/" + dataset_dir + "/train_labels/" + file)
-    for file in os.listdir(dataset_dir + "/val"):
-        cwd = os.getcwd()
-        val_input_names.append(cwd + "/" + dataset_dir + "/val/" + file)
-    for file in os.listdir(dataset_dir + "/val_labels"):
-        cwd = os.getcwd()
-        val_output_names.append(cwd + "/" + dataset_dir + "/val_labels/" + file)
+        train_input_names.append(cwd+"/" + dataset_dir + "/train/" + file)
+
+    if isvalid:
+        for file in os.listdir(dataset_dir + "/val"):
+            cwd = os.getcwd()
+            val_input_names.append(cwd + "/" + dataset_dir + "/val/" + file)
+        for file in os.listdir(dataset_dir + "/val_labels"):
+            cwd = os.getcwd()
+            val_output_names.append(cwd + "/" + dataset_dir + "/val_labels/" + file)
+    else:
+        x = (int)(split_ratio * len(train_input_names))
+        return train_input_names[:x], train_output_names[:x], train_input_names[x:], train_output_names[x:] 
+    return train_input_names,train_output_names, val_input_names, val_output_names
+
+def get_test_data(dataset_dir):
+    if 'cityscapes' in dataset_dir:
+        return get_test_data_2(dataset_dir)
+   
+    test_input_names=[]
+    test_output_names=[]
     for file in os.listdir(dataset_dir + "/test"):
         cwd = os.getcwd()
         test_input_names.append(cwd + "/" + dataset_dir + "/test/" + file)
     for file in os.listdir(dataset_dir + "/test_labels"):
         cwd = os.getcwd()
         test_output_names.append(cwd + "/" + dataset_dir + "/test_labels/" + file)
+
+    return test_input_names, test_output_names
+
+def prepare_data(dataset):
+    train_input_names,train_output_names, val_input_names, val_output_names = get_train_val_data(dataset_dir[dataset]['path'], dataset_dir[dataset]['isvalid'])
+    test_input_names, test_output_names = get_test_data(dataset_dir[dataset]['path'])
     train_input_names.sort(),train_output_names.sort(), val_input_names.sort(), val_output_names.sort(), test_input_names.sort(), test_output_names.sort()
     return train_input_names,train_output_names, val_input_names, val_output_names, test_input_names, test_output_names
 
+def prepare_data_multi(dataset):
+    train_input_names, train_output1_names, val_input_names, val_output1_names, test_input_names, test_output1_names = prepare_data(dataset)
+
+    train_output2_names, val_output2_names, test_output2_names=[], [], []
+
+    dataset_dir_ = dataset_dir[dataset]['path']
+
+    for file in os.listdir(dataset_dir_ + "/test_sal_newdata_s75"):
+        cwd = os.getcwd()
+        test_output2_names.append(cwd + "/" + dataset_dir_ + "/test_sal_newdata_s75/" + file)
+    
+    for file in os.listdir(dataset_dir_ + "/train_sal_newdata_s75"):
+        cwd = os.getcwd()
+        train_output2_names.append(cwd + "/" + dataset_dir_ + "/train_sal_newdata_s75/" + file)
+
+    for file in os.listdir(dataset_dir_ + "/val_sal_newdata_s75"):
+        cwd = os.getcwd()
+        val_output2_names.append(cwd + "/" + dataset_dir_ + "/val_sal_newdata_s75/" + file)
+
+    train_output2_names.sort()
+    val_output2_names.sort()
+    test_output2_names.sort()
+
+    return train_input_names, train_output1_names, train_output2_names, val_input_names, val_output1_names, val_output2_names, test_input_names, test_output1_names, test_output2_names
+
+
+def get_simple_task(dataset):
+    dataset_dir_ = '../data/camvid_all/simple'
+    seg_dir = dataset_dir[dataset]['path']  +  '/segmentation_labels/'
+    input_dir = dataset_dir[dataset]['path'] + '/input/'
+
+    train_input_names = []
+    train_output1_names = []
+    train_output2_names = []
+
+    val_input_names = []
+    val_output1_names = []
+    val_output2_names = []
+    
+    test_input_names = []
+    test_output1_names = []
+    test_output2_names = []
+
+
+    for file in os.listdir(dataset_dir_ + "/test_sal"):
+        cwd = os.getcwd()
+        test_output2_names.append(cwd + "/" + dataset_dir_ + "/test_sal/" + file)
+        test_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        test_input_names.append(cwd + "/" + input_dir + file)
+    
+    for file in os.listdir(dataset_dir_ + "/train_sal"):
+        cwd = os.getcwd()
+        train_output2_names.append(cwd + "/" + dataset_dir_ + "/train_sal/" + file)
+        train_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        train_input_names.append(cwd + "/" + input_dir + file)
+    
+    for file in os.listdir(dataset_dir_ + "/val_sal"):
+        cwd = os.getcwd()
+        val_output2_names.append(cwd + "/" + dataset_dir_ + "/val_sal/" + file)
+        val_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        val_input_names.append(cwd + "/" + input_dir + file)
+    
+    train_input_names.sort()
+    val_input_names.sort()
+    test_input_names.sort()
+
+    train_output1_names.sort()
+    val_output1_names.sort()
+    test_output1_names.sort()
+
+    train_output2_names.sort()
+    val_output2_names.sort()
+    test_output2_names.sort()
+
+    return train_input_names, train_output1_names, train_output2_names, val_input_names, val_output1_names, val_output2_names, test_input_names, test_output1_names, test_output2_names
+
+def get_difficult_task(dataset):
+    dataset_dir_ = '../data/camvid_all/difficult_new'
+    seg_dir = dataset_dir[dataset]['path']  +  '/segmentation_labels/'
+    input_dir = dataset_dir[dataset]['path'] + '/input/'
+
+    train_input_names = []
+    train_output1_names = []
+    train_output2_names = []
+
+    val_input_names = []
+    val_output1_names = []
+    val_output2_names = []
+    
+    test_input_names = []
+    test_output1_names = []
+    test_output2_names = []
+
+
+    for file in os.listdir(dataset_dir_ + "/test_sal"):
+        cwd = os.getcwd()
+        test_output2_names.append(cwd + "/" + dataset_dir_ + "/test_sal/" + file)
+        test_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        test_input_names.append(cwd + "/" + input_dir + file)
+    
+    for file in os.listdir(dataset_dir_ + "/train_sal"):
+        cwd = os.getcwd()
+        train_output2_names.append(cwd + "/" + dataset_dir_ + "/train_sal/" + file)
+        train_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        train_input_names.append(cwd + "/" + input_dir + file)
+    
+    for file in os.listdir(dataset_dir_ + "/val_sal"):
+        cwd = os.getcwd()
+        val_output2_names.append(cwd + "/" + dataset_dir_ + "/val_sal/" + file)
+        val_output1_names.append(cwd + "/" + seg_dir + file[:-4]+'_L.png')
+        val_input_names.append(cwd + "/" + input_dir + file)
+    
+    train_input_names.sort()
+    val_input_names.sort()
+    test_input_names.sort()
+
+    train_output1_names.sort()
+    val_output1_names.sort()
+    test_output1_names.sort()
+
+    train_output2_names.sort()
+    val_output2_names.sort()
+    test_output2_names.sort()
+
+    return train_input_names, train_output1_names, train_output2_names, val_input_names, val_output1_names, val_output2_names, test_input_names, test_output1_names, test_output2_names
+
+
 def load_image(path):
+    # print(path)
     image = cv2.cvtColor(cv2.imread(path,-1), cv2.COLOR_BGR2RGB)
     return image
+
+def load_image_output(path):
+    image = cv2.imread(path, 0)
+    return image    
 
 # Takes an absolute file path and returns the name of the file without th extension
 def filepath_to_name(full_name):
@@ -57,8 +270,8 @@ def LOG(X, f=None):
     if not f:
         print(time_stamp + " " + X)
     else:
-        f.write(time_stamp + " " + X)
-
+        with open(f, 'a') as f:
+            f.write(time_stamp + " " + X)
 
 # Count total number of parameters in the model
 def count_params():
@@ -163,9 +376,48 @@ def lovasz_softmax(probas, labels, only_present=True, per_image=False, ignore=No
         losses = _lovasz_softmax_flat(*_flatten_probas(probas, labels, ignore, order), only_present=only_present)
     return losses
 
+def crop_data_video(input1_image, input2_image, input3_image, label1, label2, args):    
+    crop_height, crop_width = args.crop_height, args.crop_width
+    x = random.randint(0, input1_image.shape[1]-crop_width)
+    y = random.randint(0, input1_image.shape[0]-crop_height)
 
+    if len(label2.shape) == 3:
+        return input1_image[y:y+crop_height, x:x+crop_width, :], input2_image[y:y+crop_height, x:x+crop_width, :], input3_image[y:y+crop_height, x:x+crop_width, :], label1[y:y+crop_height, x:x+crop_width, :], label2[y:y+crop_height, x:x+crop_width, :]
+    else:
+        return input1_image[y:y+crop_height, x:x+crop_width, :], input2_image[y:y+crop_height, x:x+crop_width, :], input3_image[y:y+crop_height, x:x+crop_width, :], label1[y:y+crop_height, x:x+crop_width, :], label2[y:y+crop_height, x:x+crop_width]
+
+def data_augmentation(input_image, output_image, args):
+    # Data augmentation
+    if args.resize:
+        input_image, output_image = resize(input_image, output_image, args.crop_height, args.crop_width)
+    else:
+        input_image, output_image = random_crop(input_image, output_image, args.crop_height, args.crop_width)
+
+    if args.h_flip and random.randint(0,1):
+        input_image = cv2.flip(input_image, 1)
+        output_image = cv2.flip(output_image, 1)
+    if args.v_flip and random.randint(0,1):
+        input_image = cv2.flip(input_image, 0)
+        output_image = cv2.flip(output_image, 0)
+    if args.brightness:
+        factor = 1.0 + random.uniform(-1.0*args.brightness, args.brightness)
+        table = np.array([((i / 255.0) * factor) * 255 for i in np.arange(0, 256)]).astype(np.uint8)
+        input_image = cv2.LUT(input_image, table)
+    if args.rotation:
+        angle = random.uniform(-1*args.rotation, args.rotation)
+    if args.rotation:
+        M = cv2.getRotationMatrix2D((input_image.shape[1]//2, input_image.shape[0]//2), angle, 1.0)
+        input_image = cv2.warpAffine(input_image, M, (input_image.shape[1], input_image.shape[0]), flags=cv2.INTER_NEAREST)
+        output_image = cv2.warpAffine(output_image, M, (output_image.shape[1], output_image.shape[0]), flags=cv2.INTER_NEAREST)
+
+    return input_image, output_image
+
+def resize(image, label, crop_height, crop_width):
+    return cv2.resize(image, (crop_height, crop_width)), cv2.resize(label, (crop_height, crop_width))
+    
 # Randomly crop the image to a specific size. For data augmentation
 def random_crop(image, label, crop_height, crop_width):
+    # print(image.shape, label.shape)
     if (image.shape[0] != label.shape[0]) or (image.shape[1] != label.shape[1]):
         raise Exception('Image and label must have the same dimensions!')
         
@@ -214,10 +466,9 @@ def compute_class_accuracies(pred, label, num_classes):
 
 
 def compute_mean_iou(pred, label):
-
     unique_labels = np.unique(label)
-    num_unique_labels = len(unique_labels);
-
+    num_unique_labels = len(unique_labels)
+    
     I = np.zeros(num_unique_labels)
     U = np.zeros(num_unique_labels)
 
@@ -228,10 +479,28 @@ def compute_mean_iou(pred, label):
         I[index] = float(np.sum(np.logical_and(label_i, pred_i)))
         U[index] = float(np.sum(np.logical_or(label_i, pred_i)))
 
-
     mean_iou = np.mean(I / U)
     return mean_iou
 
+def mse(pred, label):
+    x = pred-label
+    n = x.shape[0]
+    return np.dot(x, x)/n
+
+def mae(pred, label):
+    x = pred-label
+    return np.absolute(x)   
+
+def evaluate_regression(pred, label, threshold = 0.01):
+    pred = np.squeeze(pred).flatten()
+    label = np.squeeze(label).flatten()
+    x = pred-label
+    y = (abs(x) <= threshold).sum()
+    n = x.shape[0]
+    return np.sqrt(np.dot(x, x))/n , y/pred.shape[0]
+    
+    # pred_ = (pred >= 0.5)
+    # return mse(pred, label), mae(pred, label), precision_score(pred_, label, average="weighted"), recall_score(pred_, label, average="weighted"), f1_score(pred_, label, average="weighted")
 
 def evaluate_segmentation(pred, label, num_classes, score_averaging="weighted"):
     flat_pred = pred.flatten()
@@ -296,4 +565,3 @@ def memory():
     py = psutil.Process(pid)
     memoryUse = py.memory_info()[0]/2.**30  # Memory use in GB
     print('Memory usage in GBs:', memoryUse)
-

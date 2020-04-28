@@ -16,8 +16,8 @@ def ConvUpscaleBlock(inputs, n_filters, kernel_size=[3, 3], scale=2):
     Basic conv transpose block for Encoder-Decoder upsampling
     Apply successivly Transposed Convolution, BatchNormalization, ReLU nonlinearity
     """
-    net = slim.conv2d_transpose(inputs, n_filters, kernel_size=[3, 3], stride=[2, 2], activation_fn=None)
     net = tf.nn.relu(slim.batch_norm(net, fused=True))
+    net = slim.conv2d_transpose(inputs, n_filters, kernel_size=[3, 3], stride=[2, 2], activation_fn=None)
     return net
 
 def ConvBlock(inputs, n_filters, kernel_size=[3, 3]):
@@ -75,8 +75,8 @@ def CFFBlock(F1, F2, num_classes):
 
     return F1_out, F2_out
 
-def build_icnet(inputs, label_size, num_classes, preset_model='ICNet', pooling_type = "MAX",
-    frontend="Res101", weight_decay=1e-5, is_training=True, pretrained_dir="models"):
+def build_icnet_multi(inputs, label_size, num_classes, preset_model='ICNet', pooling_type = "MAX",
+    frontend="ResNet101", weight_decay=1e-5, is_training=True, pretrained_dir="models"):
     """
     Builds the ICNet model. 
 
@@ -95,26 +95,26 @@ def build_icnet(inputs, label_size, num_classes, preset_model='ICNet', pooling_t
     inputs_2 = Upsampling_by_scale(inputs, 2)
     inputs_1 = inputs
 
-    if frontend == 'Res50':
+    if frontend == 'ResNet50':
         with slim.arg_scope(resnet_v2.resnet_arg_scope(weight_decay=weight_decay)):
             logits_32, end_points_32 = resnet_v2.resnet_v2_50(inputs_4, is_training=is_training, scope='resnet_v2_50')
-            logits_16, end_points_16 = resnet_v2.resnet_v2_50(inputs_2, is_training=is_training, scope='resnet_v2_50', reuse = True)
-            logits_8, end_points_8 = resnet_v2.resnet_v2_50(inputs_1, is_training=is_training, scope='resnet_v2_50', reuse = True)
+            logits_16, end_points_16 = resnet_v2.resnet_v2_50(inputs_2, is_training=is_training, scope='resnet_v2_50')
+            logits_8, end_points_8 = resnet_v2.resnet_v2_50(inputs_1, is_training=is_training, scope='resnet_v2_50')
             resnet_scope='resnet_v2_50'
             # ICNet requires pre-trained ResNet weights
             init_fn = slim.assign_from_checkpoint_fn(os.path.join(pretrained_dir, 'resnet_v2_50.ckpt'), slim.get_model_variables('resnet_v2_50'), ignore_missing_vars=True)
-    elif frontend == 'Res101':
+    elif frontend == 'ResNet101':
         with slim.arg_scope(resnet_v2.resnet_arg_scope(weight_decay=weight_decay)):
             logits_32, end_points_32 = resnet_v2.resnet_v2_101(inputs_4, is_training=is_training, scope='resnet_v2_101')
             logits_16, end_points_16 = resnet_v2.resnet_v2_101(inputs_2, is_training=is_training, scope='resnet_v2_101', reuse = True)
             logits_8, end_points_8 = resnet_v2.resnet_v2_101(inputs_1, is_training=is_training, scope='resnet_v2_101', reuse = True)
             # ICNet requires pre-trained ResNet weights
             init_fn = slim.assign_from_checkpoint_fn(os.path.join(pretrained_dir, 'resnet_v2_101.ckpt'), slim.get_model_variables('resnet_v2_101'), ignore_missing_vars=True)
-    elif frontend == 'Res152':
+    elif frontend == 'ResNet152':
         with slim.arg_scope(resnet_v2.resnet_arg_scope(weight_decay=weight_decay)):
             logits_32, end_points_32 = resnet_v2.resnet_v2_152(inputs_4, is_training=is_training, scope='resnet_v2_152')
-            logits_16, end_points_16 = resnet_v2.resnet_v2_152(inputs_2, is_training=is_training, scope='resnet_v2_152', reuse = True)
-            logits_8, end_points_8 = resnet_v2.resnet_v2_152(inputs_1, is_training=is_training, scope='resnet_v2_152', reuse = True)
+            logits_16, end_points_16 = resnet_v2.resnet_v2_152(inputs_2, is_training=is_training, scope='resnet_v2_152')
+            logits_8, end_points_8 = resnet_v2.resnet_v2_152(inputs_1, is_training=is_training, scope='resnet_v2_152')
             resnet_scope='resnet_v2_152'
             # ICNet requires pre-trained ResNet weights
             init_fn = slim.assign_from_checkpoint_fn(os.path.join(pretrained_dir, 'resnet_v2_152.ckpt'), slim.get_model_variables('resnet_v2_152')) 
@@ -124,14 +124,23 @@ def build_icnet(inputs, label_size, num_classes, preset_model='ICNet', pooling_t
     feature_map_shape = [int(x / 32.0) for x in label_size]
 
     psp_32 = PyramidPoolingModule(end_points_32['pool3'], feature_map_shape = feature_map_shape, pooling_type = pooling_type)
-    out_16, block_16 = CFFBlock(psp_32, end_points_16['pool3'], num_classes)
-    out_8, block_8 = CFFBlock(block_16, end_points_8['pool3'], num_classes)
-    out_4 = Upsampling_by_scale(out_8, scale = 2)
-    net = slim.conv2d(out_4, num_classes, [1, 1], activation_fn = None, scope = 'logits') 
+    
+    out_16_1, block_16_1 = CFFBlock(psp_32, end_points_16['pool3'], num_classes)
+    out_8_1, block_8_1 = CFFBlock(block_16_1, end_points_8['pool3'], num_classes)
+    out_4_1 = Upsampling_by_scale(out_8_1, scale = 2)
+    net_1 = slim.conv2d(out_4_1, num_classes, [1, 1], activation_fn = None, scope = 'logits1') 
     # out_final = Upsampling_by_scale(out_4, scale = 2)
     # out_full = tf.concat([out_16, out_8, out_4, out_final], axis = -1)
     # net = slim.conv2d(out_final, num_classes, [1, 1], activation_fn=None, scope='logits')
-    return net, init_fn
+
+    out_16_2, block_16_2 = CFFBlock(psp_32, end_points_16['pool3'], num_classes)
+    out_8_2, block_8_2 = CFFBlock(block_16_2, end_points_8['pool3'], num_classes)
+    out_4_2 = Upsampling_by_scale(out_8_2, scale = 2)
+    net_2 = slim.conv2d(out_4_2, 1, [1, 1], activation_fn = tf.nn.sigmoid, scope = 'logits2') 
+    # out_final = Upsampling_by_scale(out_4, scale = 2)
+    # out_full = tf.concat([out_16, out_8, out_4, out_final], axis = -1)
+    # net = slim.conv2d(out_final, num_classes, [1, 1], activation_fn=None, scope='logits'
+    return net_1, net_2, init_fn
 
 def mean_image_subtraction(inputs, means=[123.68, 116.78, 103.94]):
     inputs=tf.to_float(inputs)
